@@ -453,7 +453,7 @@ private void buildFailed(const ProjectNode node, CompilationResult res, Compilin
         res.compilationCommand, 
         "\nFailed after ", res.msNeeded,"ms with message\n\t", res.message
     );
-    showNewerVersionMessage();
+    // showNewerVersionMessage();
     saveFinishedBuilds(finishedPackages, mainPackHash, s, formulaCache, existingSharedFormula);
 }
 
