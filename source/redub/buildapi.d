@@ -8,7 +8,7 @@ import redub.package_searching.api;
 
 
 ///vX.X.X
-enum RedubVersionOnly = "v1.23.7";
+enum RedubVersionOnly = "v1.24.0";
 ///Redub vX.X.X
 enum RedubVersionShort = "Redub "~RedubVersionOnly;
 ///Redub vX.X.X - Description
@@ -19,6 +19,13 @@ private string getDFrontendVersion()
     import std.conv:to;
     string ret = __VERSION__.to!string;
     return ret[0..$-3]~"."~ret[$-3..$];
+}
+
+enum OSExtension
+{
+    webAssembly = OS.unknown + 1,
+    emscripten = webAssembly,
+    visionOS
 }
 
 /**
@@ -64,6 +71,7 @@ enum BuildType : string
     debug_ = "debug",
     plain = "plain",
     release = "release",
+    release_size = "release-size",
     release_debug = "release-debug",
     compiler_verbose = "compiler-verbose",
     codegen_verbose = "codegen-verbose",
@@ -141,7 +149,7 @@ RedubLanguages redubLanguage(string input)
         }
         default:break;
     }
-    throw new RedubException("Invalid language '"~input~"' received.");
+    throw new BuildException("Invalid language '"~input~"' received.");
 }
 
 enum RedubLanguages : ubyte
@@ -701,11 +709,13 @@ struct BuildRequirements
         return output;
     }
 
-    immutable(ThreadBuildData) buildData() inout
+    immutable(ThreadBuildData) buildData(bool isLeaf) inout
     {
         return immutable ThreadBuildData(
             cfg.idup,
             extra.idup,
+            false,
+            isLeaf
         );
     }
 
@@ -762,6 +772,8 @@ struct ThreadBuildData
     ExtraInformation extra;
 
     bool isRoot;
+    ///Used for letting it get high priority so redub may exit fast.
+    bool isLeaf;
 }
 
 class ProjectNode
@@ -1076,12 +1088,12 @@ class ProjectNode
         StopWatch sw = StopWatch(AutoStart.no);
         if(hasLogLevel(LogLevel.vverbose))
             sw.start();
-        mergeParentInDependencies(this);
-        inLogLevel(LogLevel.vverbose, vvlog("mergeParentInDependencies finished at ", sw.peek.total!"msecs", "ms"));
-
         string[] removedOptionals;
         transferDependenciesAndClearOptional(this, removedOptionals);
         inLogLevel(LogLevel.vverbose, vvlog("transferDependenciesAndClearOptional finished at ", sw.peek.total!"msecs", "ms"));
+
+        mergeParentInDependencies(this);
+        inLogLevel(LogLevel.vverbose, vvlog("mergeParentInDependencies finished at ", sw.peek.total!"msecs", "ms"));
 
         if(removedOptionals.length)
             warn("Optional Dependencies ", removedOptionals, " not included since they weren't requested as non optional from other places.");
@@ -1203,6 +1215,31 @@ class ProjectNode
         }
         generateCollapsedImpl(this, collapsedList, visitedMap);
         return collapsedList;
+    }
+
+    ///Will find the deepest node in the tree which is not up to date
+    ProjectNode findPriorityNode() const
+    {
+        ProjectNode deepestDirtyNode = cast()this;
+        bool[const ProjectNode] vis;
+        int maxDepth = 0;
+
+        static void impl(ref bool[const ProjectNode] visited, const ProjectNode curr, ref ProjectNode deepest, ref int maxDepth, int depth)
+        {
+            visited[curr] = true;
+            if(depth > maxDepth)
+            {
+                maxDepth = depth;
+                deepest = cast()curr;
+            }
+            foreach(dep; curr.dependencies)
+            {
+                if(dep !in visited && !dep.isUpToDate)
+                    impl(visited, dep, deepest, maxDepth, depth + 1);
+            }
+        }
+        impl(vis, this, deepestDirtyNode, maxDepth, 0);
+        return deepestDirtyNode;
     }
 
     ProjectNode[] findLeavesNodes()

@@ -1,40 +1,59 @@
 module redub.building.utils;
 import redub.buildapi;
+public import redub.misc.shell;
+import core.sys.posix.sys.ioctl;
 
-auto execCompilerBase(const BuildConfiguration cfg, string compilerBin, string[] compileFlags, out string compilationCommands, bool isDCompiler)
+string getHighPriorityCmd()
+{
+    version(Posix)
+    {
+        return "nice -n 0 ";
+    }
+    else return "";
+}
+
+ProcessExec2 execCompiler(const BuildConfiguration cfg, Compiler compiler, string[] compileFlags, out string compilationCommands, bool hasHighPriority, out string cmdFile)
 {
     import std.system;
-    import std.process;
     import std.file;
     import redub.command_generators.automatic;
     import redub.command_generators.commons;
-    if(std.system.os.isWindows && isDCompiler)
+
+
+    CompilerBinary cBin = cfg.getCompiler(compiler);
+    string compilerBin = cBin.bin;
+
+    if(std.system.os.isWindows && cBin.isDCompiler)
     {
-        string cmdFile = createCommandFile(cfg, compileFlags, compilationCommands);
+        cmdFile = createCommandFile(cfg, compileFlags, compilationCommands);
         compilationCommands = compilerBin ~ " "~compilationCommands;
-        scope(exit)
-            std.file.remove(cmdFile);
-        return executeShell(compilerBin~ " @"~cmdFile, null, Config.none, size_t.max, cfg.workingDir);
+        ProcessExec2 ret = executeShell2(compilerBin~ " @"~cmdFile, null, Config.none, size_t.max, cfg.workingDir);
+
+        version(Windows)
+        {
+            if(hasHighPriority)
+            {
+                import core.sys.windows.winbase;
+                SetPriorityClass(ret.pipe.pid.osHandle, REALTIME_PRIORITY_CLASS);
+            }
+        }
+
+        return ret;
     }
     compilationCommands = escapeCompilationCommands(compilerBin, compileFlags);
-    return executeShell(compilationCommands, null, Config.none, size_t.max, cfg.workingDir);
+    return executeShell2(getHighPriorityCmd ~ compilationCommands, null, Config.none, size_t.max, cfg.workingDir);
 }
 
-auto execCompiler(const BuildConfiguration cfg, string compilerBin, string[] compileFlags, out string compilationCommands, Compiler compiler, string inputDir)
+
+auto finishCompilerExec(const BuildConfiguration cfg, Compiler compiler, string inputDir, string outDir, ProcessExec2 p)
 {
     import std.file;
     import redub.api;
     import std.path;
-
     import redub.compiler_identification;
     import redub.command_generators.commons;
-    //Remove existing binary, since it won't be replaced by simply executing commands
-    string outDir = getConfigurationOutputPath(cfg, os);
-    if(exists(outDir))
-        remove(outDir);
 
-    auto ret = execCompilerBase(cfg, compilerBin, compileFlags, compilationCommands, cfg.getCompiler(compiler).isDCompiler);
-
+    auto ret = waitProcessExec(p);
     if(ret.status == 0)
     {
         //For working around bug 3541, 24748, dmd generates .obj files besides files, redub will move them out
@@ -43,21 +62,21 @@ auto execCompiler(const BuildConfiguration cfg, string compilerBin, string[] com
             moveGeneratedObjectFiles(cfg.sourcePaths, cfg.sourceFiles, cfg.excludeSourceFiles, getObjectDir(inputDir),getObjectExtension(os));
         copyDir(inputDir, dirName(outDir));
     }
-
-
     return ret;
 }
 
-auto linkBase(const ThreadBuildData data, CompilingSession session, string rootHash, out string compilationCommand)
+
+
+
+ProcessExec2 linkBase(const ThreadBuildData data, CompilingSession session, string rootHash, out string compilationCommand, out string cmdFile)
 {
     import redub.command_generators.automatic;
-    CompilerBinary c = data.cfg.getCompiler(session.compiler);
-    return execCompilerBase(
-        data.cfg,
-        c.bin,
+    return execCompiler(
+        data.cfg,session.compiler,
         getLinkFlags(data, session,  rootHash),
         compilationCommand,
-        c.isDCompiler,
+        true,
+        cmdFile
     );
 }
 
