@@ -552,7 +552,7 @@ private void buildFailed(const ProjectNode node, CompilationResult res, Compilin
         res.compilationCommand,
         "\nStatus '"~res.status.to!string~"' after ", res.msNeeded,"ms "~msg
     );
-    showNewerVersionMessage();
+    //showNewerVersionMessage();
     ///It can save anything, except the root project as it would make it up to date while it actually requires the .lib files to be up to date.
     saveFinishedBuilds(filter!((ProjectNode n) => !n.isRoot)(finishedPackages), mainPackHash, s, formulaCache, existingSharedFormula);
 }
@@ -657,7 +657,7 @@ private bool doLink(ProjectNode root, CompilingSession info, string mainPackHash
                 linkRes.compilationCommand,"\n\t\t  :\n\t",
                 linkRes.message,
             );
-            showNewerVersionMessage();
+            //showNewerVersionMessage();
             return false;
         }
         else
