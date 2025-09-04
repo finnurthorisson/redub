@@ -25,7 +25,7 @@ private JSONObject newObject()
 struct JSONArray
 {
 	size_t length() const { return value.length; }
-	private CacheArray!(JSONValue, 4) value;
+	private CacheArray!(JSONValue, 2) value;
 
 	/**
 	 * Small array that holds up to N members in static memory. Whenever bigger than N,
@@ -33,9 +33,12 @@ struct JSONArray
 	 */
 	private static struct CacheArray(T, size_t N)
 	{
-		private T[N] staticData = void;
-		private T[] dynData = void;
-		private size_t actualLength = void;
+		union {
+			private T[N] staticData;
+			T[] dynData;
+		}
+		private uint actualLength;
+		private bool usingDynamic;
 
 		this(T[] value)
 		{
@@ -44,11 +47,12 @@ struct JSONArray
 
 		private void set(T[] values)
 		{
-			if(values.length <= N)
+			this.usingDynamic = values.length > N;
+			if(!usingDynamic)
 				staticData.ptr[0..values.length] = values[];
 			else
 				dynData = values.dup;
-			actualLength = values.length;
+			actualLength = cast(uint)values.length;
 		}
 		private void append(T value)
 		{
@@ -62,10 +66,12 @@ struct JSONArray
 			else
 			{
 				import std.array:uninitializedArray;
-				if(dynData is null)
+				if(!usingDynamic)
 				{
-					dynData = uninitializedArray!(T[])(actualLength+values.length);
-					memcpy(dynData.ptr, staticData.ptr, actualLength * T.sizeof);
+					T[] dynamic = uninitializedArray!(T[])(actualLength+values.length);
+					memcpy(dynamic.ptr, staticData.ptr, actualLength * T.sizeof);
+					dynData = dynamic;
+					usingDynamic = true;
 				}
 				else if (dynData.length < actualLength + values.length)
 				{
@@ -79,13 +85,13 @@ struct JSONArray
 
 		void trim()
 		{
-			if(dynData !is null)
+			if(usingDynamic)
 				dynData.length = actualLength;
 		}
 		size_t length() const { return actualLength; }
 		inout(T)[] getArray() inout
 		{
-			if(actualLength <= N)
+			if(!usingDynamic)
 				return staticData[0..actualLength];
 			return dynData[0..actualLength];
 		}
@@ -93,7 +99,7 @@ struct JSONArray
 
 	this(JSONValue[] v)
 	{
-		this.value = CacheArray!(JSONValue, 4)(v);
+		this.value = CacheArray!(JSONValue, 2)(v);
 	}
 
 	static JSONArray* append(JSONArray* self, JSONValue v)
