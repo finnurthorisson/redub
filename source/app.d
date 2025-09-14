@@ -111,6 +111,11 @@ int runMain(string[] args, string[] runArgs)
         return d.getReturnCode;
     if(d.tree.requirements.cfg.targetType != TargetType.executable)
         return 1;
+    if(d.tree.name == "redub")
+    {
+        warnTitle("Attempt to build and run redub with redub: ", "For building redub with redub, use the command 'redub update' which already outputs an optimized build");
+        return 0;
+    }
     return executeProgram(d.tree, runArgs);
 }
 
@@ -401,18 +406,49 @@ ProjectDetails resolveDependencies(string[] args, bool isDescribeOnly = false)
     import std.algorithm.comparison:either;
     import std.getopt;
     import redub.api;
-    string subPackage = parseSubpackageFromCli(args);
     string workingDir = std.file.getcwd();
+    string targetPackage = getPackageFromCli(args);
+    string packageVersion = getVersionFromPackage(targetPackage);
+    string subPackage = getSubPackage(targetPackage);
     string recipe;
 
     DubArguments bArgs;
     GetoptResult res = betterGetopt(args, bArgs);
-    updateVerbosity(bArgs.cArgs);
+
     if(res.helpWanted)
     {
         import std.getopt;
         string newCommands =
 `
+USAGE: redub [--version] [<command>] [<options...>] [-- [<application arguments...>]]
+
+Manages the redub project in the current directory. If the command is omitted,
+redub will default to "run". When running an application, "--" can be used to
+separate redub options from options passed to the application.
+
+Run "redub <command> --help" to get help for a specific command.
+
+Available commands
+==================
+
+  Package creation
+  ----------------
+  init [<directory> [<dependency>...]]
+                        Initializes an empty package skeleton
+
+  Build, test and run
+  -------------------
+  run [<package>[@<version-spec>]]
+                        Builds and runs a package (default command)
+  build [<package>[@<version-spec>]]
+                        Builds a package (uses the main package in the current
+                        working directory by default)
+  test [<package>[@<version-spec>]]
+                        Executes the tests of the selected package
+  describe [<package>[@<version-spec>]]
+                        Prints a description of the specified --data files
+  clean [<package>]     Removes intermediate build files and cached build
+                        results
 
 Additions to redub commands --
 
@@ -424,6 +460,21 @@ update
         defaultGetoptPrinter(RedubVersionShort~" build information: \n\t"~newCommands, res.options);
         return ProjectDetails.init;
     }
+    updateVerbosity(bArgs.cArgs);
+
+
+    if(targetPackage)
+    {
+        import redub.package_searching.cache;
+        import redub.package_searching.entry;
+        import std.stdio;
+        PackageInfo* info = findPackage(targetPackage, null, packageVersion, "redub-run");
+        if(!info)
+            throw new RedubException("Could not find the package "~targetPackage~" with version "~packageVersion);
+        workingDir = info.path;
+        recipe = findEntryProjectFile(info.path);
+    }
+
     if(bArgs.version_)
     {
         import std.stdio;
@@ -435,7 +486,8 @@ update
     DubCommonArguments cArgs = bArgs.cArgs;
     if(cArgs.root)
         workingDir = cArgs.getRoot(workingDir);
-
+    if(recipe && (cArgs.recipe || cArgs.root))
+        throw new Error(`Can't specify a target package to build if you specify either --root or --recipe`);
     if(bArgs.single && cArgs.recipe)
         throw new RedubException("Can't set both --single and --recipe");
     if(cArgs.recipe)
@@ -462,7 +514,13 @@ update
         import redub.package_searching.dub;
         string selections = redub.misc.path.buildNormalizedPath(workingDir, "dub.selections.json");
         auto timing = timed((){prefetchPackages(selections); return true;});
-        infos("Prefetchi Finished: ", timing.msecs,"ms");
+
+        foreach(pkg; fetchedPackages)
+        {
+            infos("Fetch Success: ", pkg.name, " v",pkg.version_, " required by ", pkg.reqBy);
+        }
+        fetchedPackages.length = 0;
+        infos("Prefetch Finished: ", timing.msecs,"ms");
     }
 
 
@@ -508,16 +566,33 @@ void updateVerbosity(DubCommonArguments a)
     if(a.vverbose) return setLogLevel(LogLevel.vverbose);
     return setLogLevel(LogLevel.info);
 }
-
-private string parseSubpackageFromCli(ref string[] args)
+private string getPackageFromCli(ref string[] args)
 {
-    import std.string:startsWith;
-    import std.algorithm.searching;
-    ptrdiff_t subPackIndex = countUntil!((a => a.startsWith(':')))(args);
-    if(subPackIndex == -1) return null;
+    if(args.length > 1 && args[1][0] != '-')
+    {
+        string ret = args[1];
+        args = args[0..$] ~ args[2..$];
+        return ret;
+    }
+    return null;
+}
 
-    string ret;
-    ret = args[subPackIndex][1..$];
-    args = args[0..subPackIndex] ~ args[subPackIndex+1..$];
+private string getVersionFromPackage(ref string pkg)
+{
+    import std.algorithm.searching;
+    ptrdiff_t ver = countUntil!((a => a == '@'))(pkg);
+    if(ver == -1) return null;
+    string ret = pkg[ver+2..$]; //Advance @ and v from the tag
+    pkg = pkg[0..ver];
+    return ret;
+}
+
+private string getSubPackage(ref string pkg)
+{
+    import std.algorithm.searching;
+    ptrdiff_t subPackIndex = countUntil!((a => a == ':'))(pkg);
+    if(subPackIndex == -1) return null;
+    string ret = pkg[subPackIndex+1..$];
+    pkg = pkg[0..subPackIndex];
     return ret;
 }
