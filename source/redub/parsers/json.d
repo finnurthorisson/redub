@@ -52,6 +52,12 @@ BuildRequirements parse(string filePath,
     return parse(parseJSONCached(filePath), c, pending, isRoot);
 }
 
+string getPackageName(string filePath)
+{
+    JSONValue v = parseJSONCached(filePath);
+    return v["name"].str;
+}
+
 /**
  *
  * Params:
@@ -213,6 +219,7 @@ BuildRequirements parse(JSONValue json, ParseConfig cfg, out BuildConfiguration 
         "excludedSourceFiles": (ref BuildRequirements req, JSONValue v, ParseConfig c, ref BuildConfiguration _){addExcludedSourceFiles(req, v.strArr, c);},
         "libPaths":  (ref BuildRequirements req, JSONValue v, ParseConfig c, ref BuildConfiguration _){addLibPaths(req, v.strArr, c);},
         "libs":  (ref BuildRequirements req, JSONValue v, ParseConfig c, ref BuildConfiguration _){addLibs(req, v.strArr, c);},
+        "frameworks":  (ref BuildRequirements req, JSONValue v, ParseConfig c, ref BuildConfiguration _){addFrameworks(req, v.strArr, c);},
         "versions":  (ref BuildRequirements req, JSONValue v, ParseConfig c, ref BuildConfiguration _){addVersions(req, v.strArr, c);},
         "debugVersions":  (ref BuildRequirements req, JSONValue v, ParseConfig c, ref BuildConfiguration _){addDebugVersions(req, v.strArr, c);},
         "lflags":  (ref BuildRequirements req, JSONValue v, ParseConfig c, ref BuildConfiguration _){addLinkFlags(req, v.strArr, c);},

@@ -60,6 +60,12 @@ string[] parseLinkConfiguration(const ThreadBuildData data, CompilingSession s, 
             cmds = mapAppendReverse(cmds, data.extra.librariesFullPath, (string l) => "-L"~getOutputName(TargetType.staticLibrary, l, s.os));
             if(emitStartGroup)
                 cmds~= "-L--end-group";
+
+            if(s.os.isApple)
+            {
+                foreach(framework; frameworks)
+                    cmds~= ["-L-framework", "-L"~framework];
+            }
             cmds = mapAppendPrefix(cmds, linkFlags, "-L", false);
             cmds = mapAppendPrefix(cmds, libraryPaths, "-L-L", true);
             cmds~= getLinkFiles(b.sourceFiles);
