@@ -9,12 +9,28 @@
     "configurations": [
         {
             "name": "cli",
-            "targetType": "executable"
+            "targetType": "executable",
+            "platforms": ["windows", "linux"],
+            "versions": ["RedubCLI", "FSWForcePoll", "RedubWatcher"],
+            "dependencies": {
+                "fswatch": "~>0.6.1",
+                "arsd-official:terminal": "~>12.0"
+            }
+        },
+        {
+            "name": "cli-osx",
+            "targetType": "executable",
+            "platforms": ["osx"],
+            "versions": ["RedubCLI"]
         },
         {
             "name": "cli-dev",
-            "versions": ["Developer"],
-            "targetType": "executable"
+            "versions": ["RedubCLI", "Developer", "RedubWatcher", "FSWForcePoll"],
+            "targetType": "executable",
+            "dependencies": {
+                "fswatch": "~>0.6.1",
+                "arsd-official:terminal": "~>12.0"
+            }
         },
         {
             "name": "library",

@@ -8,7 +8,7 @@ import redub.package_searching.api;
 
 
 ///vX.X.X
-enum RedubVersionOnly = "v1.24.18";
+enum RedubVersionOnly = "v1.25.2";
 ///Redub vX.X.X
 enum RedubVersionShort = "Redub "~RedubVersionOnly;
 ///Redub vX.X.X - Description
@@ -205,7 +205,7 @@ struct BuildConfiguration
     PluginExecution[] preBuildPlugins;
     string workingDir;
     string arch;
-    @cacheExclude string targetName;
+    string targetName;
 
     ///When having those files, the build will use them instead of sourcePaths + sourceFiles
     @cacheExclude string[] changedBuildFiles;
@@ -253,10 +253,7 @@ struct BuildConfiguration
         
         ret.language = l;
         if(initialSource)
-        {
             ret.sourcePaths = [initialSource];
-            ret.importDirectories = [initialSource];
-        }
         if(initialStringImport) ret.stringImportPaths = [initialStringImport];
         ret.targetType = TargetType.autodetect;
         ret.outputDirectory = ".";
@@ -347,7 +344,7 @@ struct BuildConfiguration
         ret.libraries.exclusiveMerge(other.libraries);
         ret.frameworks.exclusiveMerge(other.frameworks);
         ret.libraryPaths.exclusiveMergePaths(other.libraryPaths);
-        ret.linkFlags.exclusiveMerge(other.linkFlags);
+        ret.linkFlags.exclusiveMerge(other.linkFlags, null, linkerMergeKeep);
         return ret;
     }
 
@@ -403,7 +400,7 @@ struct BuildConfiguration
     BuildConfiguration mergeLinkFlags(const ref BuildConfiguration other) const
     {
         BuildConfiguration ret = clone;
-        ret.linkFlags.exclusiveMerge(other.linkFlags);
+        ret.linkFlags.exclusiveMerge(other.linkFlags, null, linkerMergeKeep);
         return ret;
     }
 
@@ -498,9 +495,9 @@ private auto save(TRange)(TRange input)
 /**
 *   This version is actually faster than the other one
 */
-ref string[] exclusiveMerge(StringRange)(return scope ref string[] a, StringRange b, scope const string[] excludeFromMerge = null)
+ref string[] exclusiveMerge(StringRange)(return scope ref string[] a, StringRange b, scope const string[] excludeFromMerge = null, scope const string[] alwaysKeep = null)
 {
-    import std.algorithm.searching:countUntil;
+    import std.algorithm.searching : countUntil;
     import std.array;
     auto app = appender!(string[]);
     scope(exit)
@@ -510,7 +507,14 @@ ref string[] exclusiveMerge(StringRange)(return scope ref string[] a, StringRang
     outer: foreach(bV; save(b))
     {
         if(bV.length == 0) continue;
-        if(countUntil(excludeFromMerge, bV) != -1) continue;
+        if(countUntil(excludeFromMerge, bV) != -1)
+            continue;
+        if (countUntil(alwaysKeep, bV) != -1)
+        {
+            app ~= bV;
+            continue;
+        }
+
         foreach(aV; a)
         {
             if(aV == bV)
@@ -912,6 +916,7 @@ class ProjectNode
     void finish(OS targetOS, ISA isa)
     {
         scope bool[ProjectNode] visitedBuffer;
+        scope bool[ProjectNode] linkPropagatedBuffer;
         scope ProjectNode[] privatesToMerge;
         scope ProjectNode[] dependenciesToRemove;
         privatesToMerge.reserve(128);
@@ -951,14 +956,14 @@ class ProjectNode
          *   removedOptionals = String container for printing later warnings
          *   removedNull = String container for printing later warnings regarding dependencies without source files
          */
-        static void transferDependenciesAndClearOptional(ProjectNode node, ref string[] removedOptionals, ref string[] removedNull)
+        static void transferDependenciesAndClearOptional(ProjectNode node, ref string[] removedOptionals, ref string[] removedNull, ref bool[string] anySourceCache)
         {
             ///Enters in the deepest node
             import redub.command_generators.commons;
             import std.string:endsWith;
             for(int i = 0; i < node.dependencies.length; i++)
             {
-                bool noSource = !hasAnySource(node.dependencies[i].requirements.cfg);
+                bool noSource = !hasAnySource(node.dependencies[i].requirements.cfg, anySourceCache);
                 ///init-exec is a special case that redub will filter.
                 if(node.dependencies[i].isOptional || node.dependencies[i].name.endsWith("init-exec") || noSource)
                 {
@@ -970,7 +975,7 @@ class ProjectNode
                     i--;
                     continue;
                 }
-                transferDependenciesAndClearOptional(node.dependencies[i], removedOptionals, removedNull);
+                transferDependenciesAndClearOptional(node.dependencies[i], removedOptionals, removedNull, anySourceCache);
             }
             ///If the node is none or sourceLibrary, transfer all of its dependencies to all of its parents
             bool shouldTransfer = node.requirements.cfg.targetType == TargetType.none || node.requirements.cfg.targetType == TargetType.sourceLibrary;
@@ -1030,16 +1035,20 @@ class ProjectNode
             }
 
         }
-        static void finishMerging(ProjectNode target, ProjectNode input)
+        static void finishMerging(ProjectNode target, ProjectNode input, ref bool[ProjectNode] linkPropagated)
         {
             import redub.misc.path;
-            vvlog("Merging ", input.name, " into ", target.name);
+            vvlog("Merge ", input.name, " ---> ", target.name);
             target.requirements.cfg = target.requirements.cfg.mergeImport(input.requirements.cfg);
             target.requirements.cfg = target.requirements.cfg.mergeExcludedSourceFiles(input.requirements.cfg);
             target.requirements.cfg = target.requirements.cfg.mergeStringImport(input.requirements.cfg);
             target.requirements.cfg = target.requirements.cfg.mergeVersions(input.requirements.cfg);
             target.requirements.cfg = target.requirements.cfg.mergeFilteredDflags(input.requirements.cfg);
-            target.requirements.cfg = target.requirements.cfg.mergeLinkFlags(input.requirements.cfg);
+            if(input !in linkPropagated)
+            {
+                linkPropagated[input] = true;
+                target.requirements.cfg = target.requirements.cfg.mergeLinkFlags(input.requirements.cfg);
+            }
 
             target.requirements.cfg = target.requirements.cfg.mergeLinkFilesFromSource(input.requirements.cfg);
 
@@ -1072,7 +1081,7 @@ class ProjectNode
             }
         }
 
-        static void finishPublic(ProjectNode node, ref bool[ProjectNode] visited, ref ProjectNode[] privatesToMerge, ref ProjectNode[] dependenciesToRemove, OS targetOS, ISA isa)
+        static void finishPublic(ProjectNode node, ref bool[ProjectNode] visited, ref bool[ProjectNode] linkPropagated, ref ProjectNode[] privatesToMerge, ref ProjectNode[] dependenciesToRemove, OS targetOS, ISA isa)
         {
             if(node in visited) return;
             ///Enters in the deepest node
@@ -1080,7 +1089,7 @@ class ProjectNode
             {
                 ProjectNode dep = node.dependencies[i];
                 if(!(node in visited))
-                    finishPublic(dep, visited, privatesToMerge, dependenciesToRemove, targetOS, isa);
+                    finishPublic(dep, visited, linkPropagated, privatesToMerge, dependenciesToRemove, targetOS, isa);
             }
             ///Finish defining its self requirements so they can be transferred to its parents
             finishSelfRequirements(node, targetOS, isa);
@@ -1089,7 +1098,7 @@ class ProjectNode
             {
                 ProjectNode p = node.parent[i];
                 if(!hasPrivateRelationship(p, node))
-                   finishMerging(p, node);
+                   finishMerging(p, node, linkPropagated);
                 else
                     privatesToMerge~= [p, node];
             }
@@ -1097,10 +1106,10 @@ class ProjectNode
             if(node.requirements.cfg.targetType == TargetType.sourceLibrary || node.requirements.cfg.targetType == TargetType.none)
                 dependenciesToRemove~= node;
         }
-        static void finishPrivate(ProjectNode[] privatesToMerge, ProjectNode[] dependenciesToRemove)
+        static void finishPrivate(ProjectNode[] privatesToMerge, ProjectNode[] dependenciesToRemove, ref bool[ProjectNode] linkPropagated)
         {
             for(int i = 0; i < privatesToMerge.length; i+= 2)
-                finishMerging(privatesToMerge[i], privatesToMerge[i+1]);
+                finishMerging(privatesToMerge[i], privatesToMerge[i+1], linkPropagated);
             foreach(node; dependenciesToRemove)
             {
                 vlog("Project ", node.name, " is a ", node.requirements.cfg.targetType == TargetType.sourceLibrary ? "sourceLibrary" : "none",". Becoming independent.");
@@ -1116,7 +1125,8 @@ class ProjectNode
             sw.start();
         string[] removedOptionals;
         string[] removedNull;
-        transferDependenciesAndClearOptional(this, removedOptionals, removedNull);
+        bool[string] anySourceCache;
+        transferDependenciesAndClearOptional(this, removedOptionals, removedNull, anySourceCache);
         inLogLevel(LogLevel.vverbose, vvlog("transferDependenciesAndClearOptional finished at ", sw.peek.total!"msecs", "ms"));
 
         mergeParentInDependencies(this);
@@ -1126,13 +1136,14 @@ class ProjectNode
             warn("Optional Dependencies ", removedOptionals, " not included since they weren't requested as non optional from other places.");
         if(removedNull.length)
             warn("Dependencies ", removedNull, " not included since they didn't have any source file to build.");
-        finishPublic(this, visitedBuffer, privatesToMerge, dependenciesToRemove, targetOS, isa);
+        finishPublic(this, visitedBuffer, linkPropagatedBuffer, privatesToMerge, dependenciesToRemove, targetOS, isa);
         inLogLevel(LogLevel.vverbose, vvlog("finishPublic finished at ", sw.peek.total!"msecs", "ms"));
 
-        finishPrivate(privatesToMerge, dependenciesToRemove);
+        finishPrivate(privatesToMerge, dependenciesToRemove, linkPropagatedBuffer);
         inLogLevel(LogLevel.vverbose,  vvlog("finishPrivate finished at ", sw.peek.total!"msecs", "ms"));
 
         visitedBuffer.clear();
+        linkPropagatedBuffer.clear();
 
         dependenciesToRemove = null;
         privatesToMerge = null;
@@ -1394,3 +1405,10 @@ private bool matches(string inputName, string toMatch) @nogc nothrow
     }
     return true;
 }
+
+immutable string[] linkerMergeKeep = [
+    "-l",
+    "-framework",
+    "-L",
+    "/LIBPATH",
+];
